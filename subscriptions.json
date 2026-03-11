@@ -1,0 +1,12 @@
+{
+  "subscriptions": {
+    "7249038546": {
+      "enabled": true,
+      "modules": [
+        "new",
+        "tech",
+        "trend"
+      ]
+    }
+  }
+}
