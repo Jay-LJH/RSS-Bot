@@ -19,31 +19,6 @@ def _extract_json_block(text: str) -> dict[str, Any] | None:
         return None
 
 
-def _build_prompt(
-    repo_payload: list[dict[str, str]],
-    tech_payload: list[dict[str, str]],
-    news_payload: list[dict[str, str]],
-) -> str:
-    prompt = {
-        "task": "请基于输入内容生成日报摘要。",
-        "requirements": [
-            "GitHub 仓库：每条 1-2 句，强调用途与适用场景",
-            "科技板块：每条 1 句总结其核心信息",
-            "新闻板块：每条 1 句总结其核心信息",
-            "输出一句当天技术趋势总结，和一句当天国际新闻焦点总结",
-            "严格输出 JSON，格式为 {\"github_summaries\":[],\"github_trend\":\"\",\"tech_summaries\":[],\"tech_trend\":\"\",\"news_summaries\":[],\"news_focus\":\"\"}",
-        ],
-        "repos": repo_payload,
-        "tech_items": tech_payload,
-        "news_items": news_payload,
-    }
-
-    return (
-        "你是一个擅长技术信息提炼的助手，只输出用户要求的 JSON。\n"
-        + json.dumps(prompt, ensure_ascii=False)
-    )
-
-
 def _summarize_with_gemini(prompt_text: str) -> str:
     gemini_key = (get_env("GEMINI_API_KEY") or get_env("GOOGLE_API_KEY")).strip()
     if not gemini_key:
@@ -108,12 +83,33 @@ def _summarize_with_deepseek(prompt_text: str) -> str:
     return content
 
 
-def summarize_daily_report(
-    repo_payload: list[dict[str, str]],
-    tech_payload: list[dict[str, str]],
-    news_payload: list[dict[str, str]],
-) -> dict[str, Any]:
-    prompt_text = _build_prompt(repo_payload, tech_payload, news_payload)
+def _invoke_text_prompt(prompt_text: str) -> str:
+    errors: list[str] = []
+
+    try:
+        content = _summarize_with_gemini(prompt_text)
+        if content.strip():
+            return content.strip()
+        errors.append("Gemini 返回空内容")
+    except Exception as exc:
+        errors.append(f"Gemini 失败：{exc}")
+
+    try:
+        content = _summarize_with_deepseek(prompt_text)
+        if content.strip():
+            return content.strip()
+        errors.append("DeepSeek 返回空内容")
+    except Exception as exc:
+        errors.append(f"DeepSeek 失败：{exc}")
+
+    raise RuntimeError("；".join(errors))
+
+
+def _invoke_json_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
+    prompt_text = (
+        "你是一个擅长技术信息提炼的助手，只输出用户要求的 JSON。\n"
+        + json.dumps(prompt, ensure_ascii=False)
+    )
 
     errors: list[str] = []
 
@@ -136,3 +132,103 @@ def summarize_daily_report(
         errors.append(f"DeepSeek 失败：{exc}")
 
     raise RuntimeError("；".join(errors))
+
+
+def summarize_generic_section(module: str, module_title: str, items: list[dict[str, str]]) -> dict[str, Any]:
+    prompt = {
+        "task": "为通用资讯板块生成摘要",
+        "requirements": [
+            "对每条内容输出 3 句核心信息总结",
+            "输出一句板块焦点总结",
+            "严格输出 JSON，格式为 {\"summaries\":[],\"focus\":\"\"}",
+        ],
+        "module": module,
+        "module_title": module_title,
+        "items": items,
+    }
+    return _invoke_json_prompt(prompt)
+
+
+def classify_rss_feed(
+    source_name: str,
+    feed_title: str,
+    samples: list[dict[str, str]],
+) -> dict[str, str]:
+    prompt = {
+        "task": "根据 RSS 源内容为其归类模块",
+        "requirements": [
+            "结合 source_name、feed_title 与样本条目进行分类",
+            "module_key 使用英文小写与下划线，如 ai、finance、security、global_news",
+            "module_title 使用中文名称，如 人工智能、财经、安全、国际新闻",
+            "reason 用一句中文简述分类依据",
+            "严格输出 JSON：{\"module_key\":\"\",\"module_title\":\"\",\"reason\":\"\"}",
+        ],
+        "source_name": source_name,
+        "feed_title": feed_title,
+        "samples": samples,
+    }
+
+    data = _invoke_json_prompt(prompt)
+    module_key = str(data.get("module_key") or "").strip().lower().replace("-", "_")
+    module_title = str(data.get("module_title") or "").strip()
+    reason = str(data.get("reason") or "").strip()
+    return {
+        "module_key": module_key,
+        "module_title": module_title,
+        "reason": reason,
+    }
+
+
+def plan_tool_call(user_message: str, tool_schemas: list[dict[str, Any]]) -> dict[str, Any]:
+    prompt = {
+        "task": "根据用户输入选择是否调用工具。",
+        "rules": [
+            "如果用户在询问资讯/日报/新闻/趋势/科技内容，优先返回 tool_call",
+            "如果存在 get_smart_report 工具，且用户意图是获取某类资讯，优先选择它并传入 query=user_message",
+            "必须从提供的 tools 中选择 tool_name",
+            "若无需工具则返回 chat 并给出简短 reply",
+            "严格输出 JSON：{\"mode\":\"tool_call|chat\",\"tool_name\":\"\",\"arguments\":{},\"reply\":\"\"}",
+        ],
+        "tools": tool_schemas,
+        "user_message": user_message,
+        "examples": [
+            {
+                "input": "今天有什么科技新闻",
+                "output": {
+                    "mode": "tool_call",
+                    "tool_name": "get_smart_report",
+                    "arguments": {"query": "今天有什么科技新闻", "limit": 3},
+                    "reply": "",
+                },
+            }
+        ],
+    }
+
+    data = _invoke_json_prompt(prompt)
+    mode = str(data.get("mode") or "").strip().lower()
+    tool_name = str(data.get("tool_name") or "").strip()
+    arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+    reply = str(data.get("reply") or "").strip()
+
+    if mode not in {"tool_call", "chat"}:
+        mode = "chat"
+
+    return {
+        "mode": mode,
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "reply": reply,
+    }
+
+
+def generate_user_reply(user_message: str, tool_result: str) -> str:
+    prompt_text = (
+        "你是一个 Telegram 助手。请基于工具返回结果回复用户。\n"
+        "要求：\n"
+        "1) 使用中文\n"
+        "2) 保留关键信息与链接\n"
+        "3) 语气自然、简洁\n"
+        f"用户消息：{user_message}\n"
+        f"工具结果：\n{tool_result}\n"
+    )
+    return _invoke_text_prompt(prompt_text)

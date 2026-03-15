@@ -1,2 +1,4 @@
 .env
 __pycache__/
+content_cache.json
+*.db

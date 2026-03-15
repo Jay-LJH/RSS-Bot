@@ -1,0 +1,113 @@
+version: 1
+modules:
+  software_architecture:
+    title: 软件架构
+    sources:
+    - id: richard_seroter_s_architecture_musings_1
+      type: rss
+      name: Richard Seroter's Architecture Musings
+      url: https://seroter.com/feed/
+      enabled: true
+      limit: 5
+  entrepreneurship_and_thinking:
+    title: 创业与思维
+    sources:
+    - id: paul_graham_essays_1
+      type: rss
+      name: 'Paul Graham: Essays'
+      url: http://www.aaronsw.com/2002/feeds/pgessays.rss
+      enabled: true
+      limit: 5
+  ai:
+    title: 人工智能
+    sources:
+    - id: mit_technology_review_1
+      type: rss
+      name: MIT Technology Review
+      url: https://www.technologyreview.com/feed
+      enabled: true
+      limit: 5
+    - id: openai_news_2
+      type: rss
+      name: OpenAI News
+      url: https://openai.com/news/rss.xml
+      enabled: true
+      limit: 5
+  global_news:
+    title: 国际新闻
+    sources:
+    - id: nyt_world_news_1
+      type: rss
+      name: NYT > World News
+      url: https://rss.nytimes.com/services/xml/rss/nyt/World.xml
+      enabled: true
+      limit: 5
+    - id: nyt_world_asia_pacific_2
+      type: rss
+      name: NYT > World > Asia Pacific
+      url: https://rss.nytimes.com/services/xml/rss/nyt/AsiaPacific.xml
+      enabled: true
+      limit: 5
+  literature:
+    title: 文学图书
+    sources:
+    - id: nyt_books_book_review_1
+      type: rss
+      name: NYT > Books > Book Review
+      url: https://rss.nytimes.com/services/xml/rss/nyt/Books/Review.xml
+      enabled: true
+      limit: 5
+  finance_economics:
+    title: 财经商业
+    sources:
+    - id: ft_1
+      type: rss
+      name: FT中文网 全文
+      url: http://feeds.feedburner.com/ftchina
+      enabled: true
+      limit: 5
+  geopolitics:
+    title: 地缘政治
+    sources:
+    - id: fa_rss_1
+      type: rss
+      name: FA RSS
+      url: https://www.foreignaffairs.com/rss.xml
+      enabled: true
+      limit: 5
+  global_affairs:
+    title: 国际时事
+    sources:
+    - id: project_syndicate_1
+      type: rss
+      name: Project Syndicate
+      url: https://www.project-syndicate.org/rss
+      enabled: true
+      limit: 5
+  humanities:
+    title: 人文社科
+    sources:
+    - id: aeon_a_world_of_ideas_1
+      type: rss
+      name: Aeon | a world of ideas
+      url: https://aeon.co/feed.rss
+      enabled: true
+      limit: 5
+  humanities_culture:
+    title: 人文文化
+    sources:
+    - id: longreads_1
+      type: rss
+      name: Longreads
+      url: https://longreads.com/feed/
+      enabled: true
+      limit: 5
+  culture_and_humanities:
+    title: 文化人文
+    sources:
+    - id: everything_1
+      type: rss
+      name: Everything
+      url: https://www.newyorker.com/feed/everything
+      enabled: true
+      limit: 5
