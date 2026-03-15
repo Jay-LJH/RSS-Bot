@@ -8,12 +8,13 @@ import xml.etree.ElementTree as ET
 
 import requests
 import yaml
+from bs4 import BeautifulSoup
 
-from llm_client import classify_rss_feed
-from common import build_web_headers, clean_text
+from llm import classify_rss_feed
 
-BASE_DIR = Path(__file__).resolve().parent
-SOURCES_FILE = BASE_DIR / "sources.yml"
+BASE_DIR = Path(__file__).resolve().parent.parent
+SOURCES_FILE = BASE_DIR / "configs" / "sources.yml"
+USER_AGENT = "Mozilla/5.0 (compatible; article-bot/2.0)"
 
 MODULE_TITLES = {
     "ai": "人工智能",
@@ -22,21 +23,33 @@ MODULE_TITLES = {
     "science": "科学",
     "security": "安全",
     "gaming": "游戏",
+    "global_news": "国际新闻",
 }
 
 MODULE_KEYWORDS: dict[str, list[str]] = {
-    "ai": [
-        "tech", "technology", "ai", "software", "chip", "cloud", "openai", "google", "apple", "microsoft",
-        "科技", "技术", "人工智能", "芯片", "互联网", "软件",
-    ],
-    "opensource": ["github", "repo", "repository", "open source", "opensource", "开源", "代码", "仓库", "趋势"],
-    "finance": ["finance", "market", "stock", "economy", "财经", "股市", "经济", "投资", "货币"],
-    "sports": ["sports", "football", "nba", "fifa", "体育", "足球", "篮球", "网球", "奥运"],
-    "science": ["science", "nature", "space", "physics", "chemistry", "生物", "科学", "太空", "医学"],
-    "security": ["security", "cyber", "vulnerability", "hack", "安全", "漏洞", "攻击", "威胁"],
-    "gaming": ["game", "gaming", "steam", "esports", "游戏", "电竞", "主机"],
-    "global_news": ["news", "world", "global", "politics", "breaking", "新闻", "国际", "时政", "快讯"],
+    "ai": ["tech", "ai", "software", "芯片", "人工智能", "科技"],
+    "finance": ["finance", "market", "财经", "股市", "经济"],
+    "sports": ["sports", "football", "nba", "体育", "足球", "篮球"],
+    "science": ["science", "space", "科学", "太空", "医学"],
+    "security": ["security", "cyber", "安全", "漏洞", "攻击"],
+    "gaming": ["game", "gaming", "游戏", "电竞"],
+    "global_news": ["news", "world", "国际", "新闻", "时政"],
 }
+
+
+def _clean_text(value: str) -> str:
+    plain = BeautifulSoup((value or "").strip(), "html.parser").get_text(" ", strip=True)
+    plain = re.sub(r"\s+", " ", plain)
+    return plain.strip()
+
+
+def _build_headers() -> dict[str, str]:
+    return {"User-Agent": USER_AGENT}
+
+
+def normalize_module_key(module: str) -> str:
+    key = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "_", (module or "").strip().lower()).strip("_")
+    return key or "misc"
 
 
 @lru_cache(maxsize=1)
@@ -57,12 +70,11 @@ def load_source_catalog() -> dict[str, Any]:
     for module, raw_cfg in modules.items():
         key = normalize_module_key(str(module))
         cfg = raw_cfg if isinstance(raw_cfg, dict) else {}
-        sources = cfg.get("sources", []) if isinstance(cfg, dict) else []
+        sources = cfg.get("sources", []) if isinstance(cfg.get("sources"), list) else []
         normalized[key] = {
             "title": str(cfg.get("title") or MODULE_TITLES.get(key) or key),
             "sources": [s for s in sources if isinstance(s, dict)],
         }
-
     data["modules"] = normalized
     return data
 
@@ -73,69 +85,17 @@ def reload_source_catalog() -> dict[str, Any]:
 
 
 def _save_source_catalog(data: dict[str, Any]) -> None:
-    SOURCES_FILE.write_text(
-        yaml.safe_dump(data, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+    SOURCES_FILE.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False), encoding="utf-8")
     load_source_catalog.cache_clear()
-
-
-def normalize_module_key(module: str) -> str:
-    key = (module or "").strip().lower()
-    if not key:
-        return "misc"
-    key = re.sub(r"[^a-z0-9_\-\u4e00-\u9fff]+", "_", key).strip("_")
-    return key or "misc"
 
 
 def list_modules() -> list[str]:
     modules = load_source_catalog().get("modules", {})
-    if not isinstance(modules, dict):
-        return []
-    return [str(k) for k in modules.keys()]
+    return [str(k) for k in modules.keys()] if isinstance(modules, dict) else []
 
 
 def get_default_modules(max_count: int = 3) -> list[str]:
-    existing = list_modules()
-    return existing[:max_count]
-
-
-def get_module_sources(module: str, source_type: str | None = None) -> list[dict[str, Any]]:
-    key = normalize_module_key(module)
-
-    modules = load_source_catalog().get("modules", {})
-    cfg = modules.get(key, {}) if isinstance(modules, dict) else {}
-    sources = cfg.get("sources", []) if isinstance(cfg, dict) else []
-
-    result: list[dict[str, Any]] = []
-    for source in sources:
-        if not bool(source.get("enabled", True)):
-            continue
-        if source_type and str(source.get("type", "")).lower() != source_type.lower():
-            continue
-        result.append(source)
-    return result
-
-
-def build_unified_source_list(modules: list[str] | None = None) -> list[dict[str, Any]]:
-    selected = [normalize_module_key(x) for x in modules] if modules else list_modules()
-    output: list[dict[str, Any]] = []
-
-    for module in selected:
-        key = normalize_module_key(module)
-        for source in get_module_sources(key):
-            output.append(
-                {
-                    "module": key,
-                    "source_id": str(source.get("id") or ""),
-                    "type": str(source.get("type") or ""),
-                    "name": str(source.get("name") or ""),
-                    "url": str(source.get("url") or ""),
-                    "limit": int(source.get("limit", 3) or 3),
-                }
-            )
-
-    return output
+    return list_modules()[: max(1, int(max_count))]
 
 
 def get_module_title(module: str) -> str:
@@ -145,35 +105,61 @@ def get_module_title(module: str) -> str:
     return str(cfg.get("title") or MODULE_TITLES.get(key) or key)
 
 
-def _inspect_rss(url: str, limit: int = 8) -> dict[str, Any]:
-    response = requests.get(url, headers=build_web_headers(), timeout=20)
-    response.raise_for_status()
+def get_module_sources(module: str, source_type: str | None = None) -> list[dict[str, Any]]:
+    key = normalize_module_key(module)
+    modules = load_source_catalog().get("modules", {})
+    cfg = modules.get(key, {}) if isinstance(modules, dict) else {}
+    sources = cfg.get("sources") if isinstance(cfg.get("sources"), list) else []
+    out: list[dict[str, Any]] = []
+    for source in sources:
+        if not bool(source.get("enabled", True)):
+            continue
+        if source_type and str(source.get("type") or "").lower() != source_type.lower():
+            continue
+        out.append(source)
+    return out
 
+
+def build_unified_source_list(modules: list[str] | None = None) -> list[dict[str, Any]]:
+    selected = [normalize_module_key(x) for x in modules] if modules else list_modules()
+    result: list[dict[str, Any]] = []
+    for module in selected:
+        for source in get_module_sources(module):
+            result.append(
+                {
+                    "module": module,
+                    "source_id": str(source.get("id") or ""),
+                    "type": str(source.get("type") or ""),
+                    "name": str(source.get("name") or ""),
+                    "url": str(source.get("url") or ""),
+                    "limit": int(source.get("limit", 3) or 3),
+                }
+            )
+    return result
+
+
+def _inspect_rss(url: str, limit: int = 8) -> dict[str, Any]:
+    response = requests.get(url, headers=_build_headers(), timeout=20)
+    response.raise_for_status()
     root = ET.fromstring(response.content)
     channel = root.find("channel")
     if channel is None:
         return {"feed_title": "", "items": []}
 
-    feed_title = clean_text(channel.findtext("title", default=""))
+    feed_title = _clean_text(channel.findtext("title", default=""))
     items: list[dict[str, str]] = []
     for item in channel.findall("item")[:limit]:
-        title = clean_text(item.findtext("title", default=""))
-        desc = clean_text(item.findtext("description", default=""))
-        link = clean_text(item.findtext("link", default=""))
-        if not title and not desc:
-            continue
-        items.append({"title": title, "desc": desc, "url": link})
-
+        title = _clean_text(item.findtext("title", default=""))
+        desc = _clean_text(item.findtext("description", default=""))
+        link = _clean_text(item.findtext("link", default=""))
+        if title or desc:
+            items.append({"title": title, "desc": desc, "url": link})
     return {"feed_title": feed_title, "items": items}
 
 
 def _score_module(module: str, text: str) -> int:
-    score = 0
     content = text.lower()
-    for kw in MODULE_KEYWORDS.get(module, []):
-        if kw.lower() in content:
-            score += 1
-    return score
+    return sum(1 for kw in MODULE_KEYWORDS.get(module, []) if kw.lower() in content)
 
 
 def classify_rss_module(url: str, source_name: str = "") -> tuple[str, str]:
@@ -182,11 +168,7 @@ def classify_rss_module(url: str, source_name: str = "") -> tuple[str, str]:
     items = inspected.get("items") if isinstance(inspected.get("items"), list) else []
 
     try:
-        llm_result = classify_rss_feed(
-            source_name=source_name,
-            feed_title=feed_title,
-            samples=[x for x in items if isinstance(x, dict)][:6],
-        )
+        llm_result = classify_rss_feed(source_name=source_name, feed_title=feed_title, samples=items[:6])
         module_key = normalize_module_key(str(llm_result.get("module_key") or ""))
         module_title = str(llm_result.get("module_title") or "").strip()
         if module_key and module_key != "misc":
@@ -196,21 +178,15 @@ def classify_rss_module(url: str, source_name: str = "") -> tuple[str, str]:
 
     corpus = [source_name, feed_title]
     for item in items[:6]:
-        if not isinstance(item, dict):
-            continue
-        corpus.append(str(item.get("title") or ""))
-        corpus.append(str(item.get("desc") or ""))
+        corpus.extend([str(item.get("title") or ""), str(item.get("desc") or "")])
     text = " ".join(corpus)
 
-    best_module = "global_news"
-    best_score = -1
-    for module in MODULE_KEYWORDS.keys():
+    best_module, best_score = "global_news", -1
+    for module in MODULE_KEYWORDS:
         score = _score_module(module, text)
         if score > best_score:
-            best_score = score
-            best_module = module
-
-    return best_module, MODULE_TITLES.get(best_module, best_module.replace("_", " "))
+            best_module, best_score = module, score
+    return best_module, MODULE_TITLES.get(best_module, best_module)
 
 
 def add_rss_source(url: str, source_name: str = "", per_source_limit: int = 5) -> dict[str, Any]:
@@ -265,7 +241,6 @@ def add_rss_source(url: str, source_name: str = "", per_source_limit: int = 5) -
             "limit": max(1, int(per_source_limit)),
         }
     )
-
     module_cfg["sources"] = module_sources
     modules[module] = module_cfg
     data["modules"] = modules
@@ -298,22 +273,16 @@ def pick_modules_by_query(query: str, max_count: int = 2) -> list[str]:
             score += 3
         if title and title in text:
             score += 3
-        for kw in MODULE_KEYWORDS.get(module, []):
-            if kw.lower() in text:
-                score += 1
-
+        score += sum(1 for kw in MODULE_KEYWORDS.get(module, []) if kw.lower() in text)
         for source in get_module_sources(module):
             name = str(source.get("name") or "").lower()
             if name and name in text:
                 score += 2
-
         scored.append((module, score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
-    chosen = [m for m, s in scored if s > 0][:max_count]
-    if chosen:
-        return chosen
-    return get_default_modules(max_count=max_count)
+    chosen = [m for m, s in scored if s > 0][: max(1, int(max_count))]
+    return chosen or get_default_modules(max_count=max_count)
 
 
 def match_modules_by_rules(query: str, max_count: int = 3, min_score: int = 2) -> list[str]:
@@ -321,30 +290,19 @@ def match_modules_by_rules(query: str, max_count: int = 3, min_score: int = 2) -
     if not text:
         return []
 
-    modules = list_modules()
-    if not modules:
-        return []
-
     scored: list[tuple[str, int]] = []
-    for module in modules:
+    for module in list_modules():
         score = 0
-        module_lc = module.lower()
-        title_lc = get_module_title(module).lower()
-
-        if module_lc and module_lc in text:
+        if module.lower() in text:
             score += 4
-        if title_lc and title_lc in text:
+        title = get_module_title(module).lower()
+        if title and title in text:
             score += 4
-
-        for kw in MODULE_KEYWORDS.get(module, []):
-            if kw.lower() in text:
-                score += 1
-
+        score += sum(1 for kw in MODULE_KEYWORDS.get(module, []) if kw.lower() in text)
         for source in get_module_sources(module):
             name = str(source.get("name") or "").lower().strip()
             if name and name in text:
                 score += 5
-
         if score >= max(1, int(min_score)):
             scored.append((module, score))
 

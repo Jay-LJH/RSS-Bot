@@ -1,4 +1,6 @@
 .env
 __pycache__/
-content_cache.json
+data/content_cache.json
 *.db
+.venv/
+configs/subscriptions.json

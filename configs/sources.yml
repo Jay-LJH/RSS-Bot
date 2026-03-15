@@ -111,3 +111,12 @@ modules:
       url: https://www.newyorker.com/feed/everything
       enabled: true
       limit: 5
+  artificial_intelligence:
+    title: 人工智能
+    sources:
+    - id: mit_technology_review_1
+      type: rss
+      name: MIT Technology Review
+      url: https://www.technologyreview.com/feed
+      enabled: true
+      limit: 5

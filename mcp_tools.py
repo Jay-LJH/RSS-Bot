@@ -3,7 +3,12 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from crawler import get_available_modules, get_report, get_semantic_report, get_smart_report
+from interface.report_service import (
+    get_available_modules,
+    get_report,
+    get_semantic_report,
+    get_smart_report,
+)
 
 
 class MCPTool(ABC):
