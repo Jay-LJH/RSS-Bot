@@ -29,7 +29,7 @@ modules:
       limit: 5
     - id: openai_news_2
       type: rss
-      name: OpenAI News
+      name: OpenAI News Test
       url: https://openai.com/news/rss.xml
       enabled: true
       limit: 5

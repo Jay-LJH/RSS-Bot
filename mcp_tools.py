@@ -3,7 +3,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Any
 
-from crawler import get_available_modules, get_report, get_smart_report
+from crawler import get_available_modules, get_report, get_semantic_report, get_smart_report
 
 
 class MCPTool(ABC):
@@ -82,6 +82,27 @@ class SmartReportTool(MCPTool):
         return get_smart_report(query=query, limit=limit)
 
 
+class SemanticArticleTool(MCPTool):
+    name = "get_semantic_articles"
+    description = "对用户查询做 embedding，按相似度筛选跨 RSS 源文章并推送"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "用户查询"},
+            "top_k": {"type": "integer", "minimum": 1, "maximum": 20, "default": 5},
+            "min_similarity": {"type": "number", "minimum": 0, "maximum": 1, "default": 0.25},
+        },
+        "required": ["query"],
+        "additionalProperties": False,
+    }
+
+    def run(self, arguments: dict[str, Any]) -> str:
+        query = str(arguments.get("query") or "").strip()
+        top_k = int(arguments.get("top_k", 5))
+        min_similarity = float(arguments.get("min_similarity", 0.25))
+        return get_semantic_report(query=query, top_k=top_k, min_similarity=min_similarity)
+
+
 class MCPToolRegistry:
     def __init__(self, tools: list[MCPTool]) -> None:
         self._tools = {tool.name: tool for tool in tools}
@@ -102,5 +123,6 @@ def create_default_registry() -> MCPToolRegistry:
             LatestReportTool(),
             CustomReportTool(),
             SmartReportTool(),
+            SemanticArticleTool(),
         ]
     )

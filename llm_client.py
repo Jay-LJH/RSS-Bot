@@ -1,4 +1,7 @@
 import json
+import math
+import re
+from hashlib import blake2b
 from typing import Any
 
 import requests
@@ -134,6 +137,127 @@ def _invoke_json_prompt(prompt: dict[str, Any]) -> dict[str, Any]:
     raise RuntimeError("；".join(errors))
 
 
+def _invoke_json_prompt_fast(prompt: dict[str, Any]) -> dict[str, Any]:
+    prompt_text = (
+        "你是一个工具路由助手，只输出用户要求的 JSON。\n"
+        + json.dumps(prompt, ensure_ascii=False)
+    )
+
+    errors: list[str] = []
+
+    try:
+        content = _summarize_with_gemini(prompt_text)
+        data = _extract_json_block(content)
+        if data:
+            return data
+        errors.append(f"Gemini 返回内容不是有效 JSON：{content[:200]}")
+    except Exception as exc:
+        errors.append(f"Gemini 失败：{exc}")
+
+    try:
+        content = _summarize_with_deepseek(prompt_text)
+        data = _extract_json_block(content)
+        if data:
+            return data
+        errors.append(f"DeepSeek 返回内容不是有效 JSON：{content[:200]}")
+    except Exception as exc:
+        errors.append(f"DeepSeek 失败：{exc}")
+
+    raise RuntimeError("；".join(errors))
+
+
+def _tokenize_for_embedding(text: str) -> list[str]:
+    tokens = re.findall(r"[a-zA-Z0-9_\u4e00-\u9fff]+", (text or "").lower())
+    return [t for t in tokens if t]
+
+
+def _local_hash_embedding(text: str, dims: int = 256) -> list[float]:
+    vec = [0.0] * max(32, int(dims))
+    tokens = _tokenize_for_embedding(text)
+    if not tokens:
+        return vec
+
+    for token in tokens:
+        digest = blake2b(token.encode("utf-8"), digest_size=16).digest()
+        idx = int.from_bytes(digest[:4], "big") % len(vec)
+        sign = 1.0 if (digest[4] & 1) == 0 else -1.0
+        weight = 1.0 + ((digest[5] % 5) / 10.0)
+        vec[idx] += sign * weight
+
+    norm = math.sqrt(sum(x * x for x in vec))
+    if norm <= 1e-12:
+        return vec
+    return [x / norm for x in vec]
+
+
+def _embed_with_gemini(text: str) -> tuple[list[float], str]:
+    gemini_key = (get_env("GEMINI_API_KEY") or get_env("GOOGLE_API_KEY")).strip()
+    if not gemini_key:
+        raise RuntimeError(".env 中未配置 GEMINI_API_KEY 或 GOOGLE_API_KEY")
+
+    client = genai.Client(api_key=gemini_key)
+    model_candidates = [
+        "text-embedding-004",
+        "gemini-embedding-001",
+    ]
+
+    last_error: Exception | None = None
+    for model in model_candidates:
+        try:
+            resp = client.models.embed_content(model=model, contents=text)
+            values = None
+
+            if hasattr(resp, "embeddings") and getattr(resp, "embeddings"):
+                first = resp.embeddings[0]
+                values = getattr(first, "values", None)
+            if values is None and hasattr(resp, "embedding"):
+                emb = getattr(resp, "embedding")
+                values = getattr(emb, "values", None)
+
+            if values:
+                vec = [float(x) for x in values]
+                return vec, model
+        except Exception as exc:
+            last_error = exc
+
+    raise RuntimeError(
+        "Gemini Embedding 调用失败："
+        f"已尝试模型 {model_candidates}，"
+        f"最后错误：{last_error}"
+    ) from last_error
+
+
+def embed_text(text: str) -> dict[str, Any]:
+    clean_text = (text or "").strip()
+    if not clean_text:
+        return {"vector": [], "model": "empty"}
+
+    try:
+        vec, model = _embed_with_gemini(clean_text)
+        return {"vector": vec, "model": model}
+    except Exception:
+        vec = _local_hash_embedding(clean_text, dims=256)
+        return {"vector": vec, "model": "local-hash-256"}
+
+
+def cosine_similarity(vec_a: list[float], vec_b: list[float]) -> float:
+    if not vec_a or not vec_b:
+        return 0.0
+
+    size = min(len(vec_a), len(vec_b))
+    if size <= 0:
+        return 0.0
+
+    a = vec_a[:size]
+    b = vec_b[:size]
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    if norm_a <= 1e-12 or norm_b <= 1e-12:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
 def summarize_generic_section(module: str, module_title: str, items: list[dict[str, str]]) -> dict[str, Any]:
     prompt = {
         "task": "为通用资讯板块生成摘要",
@@ -184,7 +308,8 @@ def plan_tool_call(user_message: str, tool_schemas: list[dict[str, Any]]) -> dic
         "task": "根据用户输入选择是否调用工具。",
         "rules": [
             "如果用户在询问资讯/日报/新闻/趋势/科技内容，优先返回 tool_call",
-            "如果存在 get_smart_report 工具，且用户意图是获取某类资讯，优先选择它并传入 query=user_message",
+            "如果存在 get_semantic_articles 工具，且用户意图是获取某类资讯，优先选择它并传入 query=user_message",
+            "若不存在 get_semantic_articles，可使用 get_smart_report 并传入 query=user_message",
             "必须从提供的 tools 中选择 tool_name",
             "若无需工具则返回 chat 并给出简短 reply",
             "严格输出 JSON：{\"mode\":\"tool_call|chat\",\"tool_name\":\"\",\"arguments\":{},\"reply\":\"\"}",
@@ -196,8 +321,8 @@ def plan_tool_call(user_message: str, tool_schemas: list[dict[str, Any]]) -> dic
                 "input": "今天有什么科技新闻",
                 "output": {
                     "mode": "tool_call",
-                    "tool_name": "get_smart_report",
-                    "arguments": {"query": "今天有什么科技新闻", "limit": 3},
+                    "tool_name": "get_semantic_articles",
+                    "arguments": {"query": "今天有什么科技新闻", "top_k": 5, "min_similarity": 0.25},
                     "reply": "",
                 },
             }
@@ -205,6 +330,37 @@ def plan_tool_call(user_message: str, tool_schemas: list[dict[str, Any]]) -> dic
     }
 
     data = _invoke_json_prompt(prompt)
+    mode = str(data.get("mode") or "").strip().lower()
+    tool_name = str(data.get("tool_name") or "").strip()
+    arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}
+    reply = str(data.get("reply") or "").strip()
+
+    if mode not in {"tool_call", "chat"}:
+        mode = "chat"
+
+    return {
+        "mode": mode,
+        "tool_name": tool_name,
+        "arguments": arguments,
+        "reply": reply,
+    }
+
+
+def plan_tool_call_small_model(user_message: str, tool_schemas: list[dict[str, Any]]) -> dict[str, Any]:
+    prompt = {
+        "task": "快速判断是否调用工具",
+        "rules": [
+            "优先判断用户是否在请求资讯、日报、新闻、趋势、推送",
+            "若要查资讯，优先选择 get_semantic_articles，并传 query=user_message",
+            "若不存在 get_semantic_articles，再选择 get_smart_report 并传 query=user_message",
+            "必须从 tools 中选择 tool_name；若无需工具则 mode=chat",
+            "严格输出 JSON：{\"mode\":\"tool_call|chat\",\"tool_name\":\"\",\"arguments\":{},\"reply\":\"\"}",
+        ],
+        "tools": tool_schemas,
+        "user_message": user_message,
+    }
+
+    data = _invoke_json_prompt_fast(prompt)
     mode = str(data.get("mode") or "").strip().lower()
     tool_name = str(data.get("tool_name") or "").strip()
     arguments = data.get("arguments") if isinstance(data.get("arguments"), dict) else {}

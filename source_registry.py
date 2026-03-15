@@ -314,3 +314,39 @@ def pick_modules_by_query(query: str, max_count: int = 2) -> list[str]:
     if chosen:
         return chosen
     return get_default_modules(max_count=max_count)
+
+
+def match_modules_by_rules(query: str, max_count: int = 3, min_score: int = 2) -> list[str]:
+    text = (query or "").strip().lower()
+    if not text:
+        return []
+
+    modules = list_modules()
+    if not modules:
+        return []
+
+    scored: list[tuple[str, int]] = []
+    for module in modules:
+        score = 0
+        module_lc = module.lower()
+        title_lc = get_module_title(module).lower()
+
+        if module_lc and module_lc in text:
+            score += 4
+        if title_lc and title_lc in text:
+            score += 4
+
+        for kw in MODULE_KEYWORDS.get(module, []):
+            if kw.lower() in text:
+                score += 1
+
+        for source in get_module_sources(module):
+            name = str(source.get("name") or "").lower().strip()
+            if name and name in text:
+                score += 5
+
+        if score >= max(1, int(min_score)):
+            scored.append((module, score))
+
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return [module for module, _ in scored[: max(1, int(max_count))]]

@@ -11,9 +11,15 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 from config import get_required_env
 from crawler import get_report, refresh_content_cache
-from llm_client import generate_user_reply, plan_tool_call
+from llm_client import generate_user_reply, plan_tool_call_small_model
 from mcp_tools import MCPToolRegistry, create_default_registry
-from source_registry import add_rss_source, get_default_modules, list_modules, normalize_module_key
+from source_registry import (
+    add_rss_source,
+    get_default_modules,
+    list_modules,
+    match_modules_by_rules,
+    normalize_module_key,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -75,15 +81,15 @@ def _fallback_tool_decision(text: str) -> dict[str, Any]:
     if query and any(k in low for k in ["今天", "日报", "汇总", "总结", "推送", "rss", "资讯", "新闻", "市场", "体育", "财经"]):
         return {
             "mode": "tool_call",
-            "tool_name": "get_smart_report",
-            "arguments": {"query": query, "limit": 3},
+            "tool_name": "get_semantic_articles",
+            "arguments": {"query": query, "top_k": 5, "min_similarity": 0.25},
             "reply": "",
         }
     if query:
         return {
             "mode": "tool_call",
-            "tool_name": "get_latest_report",
-            "arguments": {"limit": 3},
+            "tool_name": "get_semantic_articles",
+            "arguments": {"query": query, "top_k": 5, "min_similarity": 0.2},
             "reply": "",
         }
     return {
@@ -403,36 +409,80 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not user_text:
         return
 
+    status_message = await update.message.reply_text("⏳ 已收到，正在规则匹配信息源…")
+
     registry = _get_registry(context.application)
-    try:
-        decision = plan_tool_call(user_text, registry.list_schemas())
-    except Exception:
-        logger.exception("LLM 工具决策失败，使用规则降级")
-        decision = _fallback_tool_decision(user_text)
+
+    matched_modules = match_modules_by_rules(user_text, max_count=3, min_score=2)
+    if matched_modules:
+        decision = {
+            "mode": "tool_call",
+            "tool_name": "get_semantic_articles",
+            "arguments": {"query": user_text, "top_k": 5, "min_similarity": 0.25},
+            "reply": "",
+        }
+        try:
+            await status_message.edit_text(
+                f"✅ 已命中规则源：{', '.join(matched_modules)}，正在拉取内容…"
+            )
+        except Exception:
+            pass
+    else:
+        try:
+            await status_message.edit_text("⏳ 规则未命中，正在使用小模型判断调用路径…")
+        except Exception:
+            pass
+
+        try:
+            decision = plan_tool_call_small_model(user_text, registry.list_schemas())
+        except Exception:
+            logger.exception("小模型工具决策失败，使用规则降级")
+            decision = _fallback_tool_decision(user_text)
 
     if decision.get("mode") == "tool_call":
         tool_name = str(decision.get("tool_name") or "")
         arguments = decision.get("arguments") if isinstance(decision.get("arguments"), dict) else {}
         try:
+            try:
+                await status_message.edit_text("⏳ 正在请求信息源并生成结果，请稍候…")
+            except Exception:
+                pass
             tool_result = registry.execute(tool_name, arguments)
         except Exception as exc:
             logger.exception("工具调用失败: %s", exc)
+            try:
+                await status_message.edit_text("❌ 请求处理失败")
+            except Exception:
+                pass
             await update.message.reply_text(
                 f"❌ 请求处理失败\n错误类型：{type(exc).__name__}\n错误详情：{exc}"
             )
             return
 
         try:
+            try:
+                await status_message.edit_text("⏳ 正在整理回复内容…")
+            except Exception:
+                pass
             reply = generate_user_reply(user_text, tool_result)
         except Exception:
             logger.exception("LLM 回复生成失败，回退原始工具结果")
             reply = tool_result
+
+        try:
+            await status_message.edit_text("✅ 已完成，正在分段发送…")
+        except Exception:
+            pass
 
         for part in _split_message(reply):
             await update.message.reply_text(part)
         return
 
     reply = str(decision.get("reply") or "我可以按你的问题自动匹配信息源并推送内容。")
+    try:
+        await status_message.edit_text("✅ 已完成")
+    except Exception:
+        pass
     for part in _split_message(reply):
         await update.message.reply_text(part)
 
