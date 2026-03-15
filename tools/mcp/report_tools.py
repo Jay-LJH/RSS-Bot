@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from typing import Any
 
 from interface.report_service import (
@@ -10,22 +9,7 @@ from interface.report_service import (
     get_smart_report,
 )
 
-
-class MCPTool(ABC):
-    name: str
-    description: str
-    parameters: dict[str, Any]
-
-    def to_schema(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters,
-        }
-
-    @abstractmethod
-    def run(self, arguments: dict[str, Any]) -> str:
-        raise NotImplementedError
+from .base import MCPTool
 
 
 class LatestReportTool(MCPTool):
@@ -106,28 +90,3 @@ class SemanticArticleTool(MCPTool):
         top_k = int(arguments.get("top_k", 5))
         min_similarity = float(arguments.get("min_similarity", 0.25))
         return get_semantic_report(query=query, top_k=top_k, min_similarity=min_similarity)
-
-
-class MCPToolRegistry:
-    def __init__(self, tools: list[MCPTool]) -> None:
-        self._tools = {tool.name: tool for tool in tools}
-
-    def list_schemas(self) -> list[dict[str, Any]]:
-        return [tool.to_schema() for tool in self._tools.values()]
-
-    def execute(self, tool_name: str, arguments: dict[str, Any] | None = None) -> str:
-        tool = self._tools.get(tool_name)
-        if not tool:
-            raise RuntimeError(f"未知工具：{tool_name}")
-        return tool.run(arguments or {})
-
-
-def create_default_registry() -> MCPToolRegistry:
-    return MCPToolRegistry(
-        tools=[
-            LatestReportTool(),
-            CustomReportTool(),
-            SmartReportTool(),
-            SemanticArticleTool(),
-        ]
-    )

@@ -24,6 +24,10 @@ Project architecture rules:
    - user interaction layer
    - telegram bot, cli, api
 
+   tools/
+   - LLM tools and other utilities
+   - no business logic
+
 4. Do not pass raw dicts between modules.
    Always use Article objects.
 

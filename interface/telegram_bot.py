@@ -13,7 +13,6 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 from config import get_required_env
 from interface.report_service import get_report, refresh_content_cache
 from llm import generate_user_reply, plan_tool_call_small_model
-from mcp_tools import MCPToolRegistry, create_default_registry
 from sources import (
     add_rss_source,
     build_unified_source_list,
@@ -23,6 +22,7 @@ from sources import (
     match_modules_by_rules,
     normalize_module_key,
 )
+from tools.mcp import MCPToolRegistry, create_default_registry
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
