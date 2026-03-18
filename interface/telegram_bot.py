@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SUBSCRIPTIONS_FILE = BASE_DIR / "configs" / "subscriptions.json"
+SUBSCRIPTIONS_FILE = BASE_DIR / "sources" / "subscriptions.json"
 CN_TZ = timezone(timedelta(hours=8))
 
 

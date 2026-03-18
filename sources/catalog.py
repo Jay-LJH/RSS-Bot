@@ -3,6 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
+import json
 import re
 import xml.etree.ElementTree as ET
 
@@ -10,10 +11,13 @@ import requests
 import yaml
 from bs4 import BeautifulSoup
 
+from core.article import Article
 from llm import classify_rss_feed
+from llm import cosine_similarity, embed_text
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-SOURCES_FILE = BASE_DIR / "configs" / "sources.yml"
+SOURCES_FILE = BASE_DIR / "sources" / "sources.yml"
+CACHE_FILE = BASE_DIR / "data" / "content_cache.json"
 USER_AGENT = "Mozilla/5.0 (compatible; article-bot/2.0)"
 
 MODULE_TITLES = {
@@ -162,6 +166,82 @@ def _score_module(module: str, text: str) -> int:
     return sum(1 for kw in MODULE_KEYWORDS.get(module, []) if kw.lower() in content)
 
 
+def _cache_signature() -> int:
+    if not CACHE_FILE.exists():
+        return -1
+    return int(CACHE_FILE.stat().st_mtime_ns)
+
+
+@lru_cache(maxsize=4)
+def _load_cached_articles(cache_sig: int) -> tuple[Article, ...]:
+    if cache_sig < 0 or not CACHE_FILE.exists():
+        return ()
+
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return ()
+
+    modules = data.get("modules") if isinstance(data, dict) else {}
+    if not isinstance(modules, dict):
+        return ()
+
+    articles: list[Article] = []
+    for module, items in modules.items():
+        if not isinstance(items, list):
+            continue
+        module_key = normalize_module_key(str(module))
+        for raw in items:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                article = Article.from_dict(raw)
+            except Exception:
+                continue
+            article.module = module_key
+            if article.url:
+                articles.append(article)
+
+    return tuple(articles)
+
+
+def _semantic_module_scores(query: str, min_similarity: float = 0.2) -> dict[str, float]:
+    payload = embed_text(query)
+    q_vec = [float(x) for x in payload.get("vector", []) if isinstance(x, (int, float))]
+    if not q_vec:
+        return {}
+
+    candidates = _load_cached_articles(_cache_signature())
+    if not candidates:
+        return {}
+
+    per_module_hits: dict[str, list[float]] = {}
+    for article in candidates:
+        candidate_vec = article.embedding
+        if not candidate_vec:
+            text = " ".join([article.title, article.snippet, article.source_name]).strip()
+            if not text:
+                continue
+            payload = embed_text(text)
+            candidate_vec = [float(x) for x in payload.get("vector", []) if isinstance(x, (int, float))]
+            if not candidate_vec:
+                continue
+
+        sim = cosine_similarity(q_vec, candidate_vec)
+        if sim < float(min_similarity):
+            continue
+        per_module_hits.setdefault(article.module, []).append(sim)
+
+    scores: dict[str, float] = {}
+    for module, sims in per_module_hits.items():
+        ordered = sorted(sims, reverse=True)
+        top = ordered[0]
+        top3_avg = sum(ordered[:3]) / min(3, len(ordered))
+        hit_bonus = min(len(ordered), 4) * 0.03
+        scores[module] = top * 0.7 + top3_avg * 0.3 + hit_bonus
+    return scores
+
+
 def classify_rss_module(url: str, source_name: str = "") -> tuple[str, str]:
     inspected = _inspect_rss(url)
     feed_title = str(inspected.get("feed_title") or "")
@@ -290,6 +370,7 @@ def match_modules_by_rules(query: str, max_count: int = 3, min_score: int = 2) -
     if not text:
         return []
 
+    semantic_scores = _semantic_module_scores(text, min_similarity=0.2)
     scored: list[tuple[str, int]] = []
     for module in list_modules():
         score = 0
@@ -303,8 +384,13 @@ def match_modules_by_rules(query: str, max_count: int = 3, min_score: int = 2) -
             name = str(source.get("name") or "").lower().strip()
             if name and name in text:
                 score += 5
-        if score >= max(1, int(min_score)):
-            scored.append((module, score))
+
+        semantic = float(semantic_scores.get(module, 0.0))
+        semantic_bonus = int(round(semantic * 10))
+        total_score = score + semantic_bonus
+
+        if total_score >= max(1, int(min_score)):
+            scored.append((module, total_score))
 
     scored.sort(key=lambda x: x[1], reverse=True)
     return [module for module, _ in scored[: max(1, int(max_count))]]
