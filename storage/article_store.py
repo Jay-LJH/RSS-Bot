@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from core.article import Article
 from llm import cosine_similarity, embed_text
 
+logger = logging.getLogger(__name__)
+
 CN_TZ = timezone(timedelta(hours=8))
+
 
 
 class ArticleStore:
@@ -63,25 +67,30 @@ class ArticleStore:
         if not rows:
             return 0
 
-        with self._connect() as conn:
-            conn.executemany(
-                """
-                INSERT INTO articles(module, source_id, source_name, title, url, snippet, embedding, embedding_model, fetched_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(url) DO UPDATE SET
-                    module=excluded.module,
-                    source_id=excluded.source_id,
-                    source_name=excluded.source_name,
-                    title=excluded.title,
-                    snippet=excluded.snippet,
-                    embedding=excluded.embedding,
-                    embedding_model=excluded.embedding_model,
-                    fetched_at=excluded.fetched_at
-                """,
-                rows,
-            )
-            conn.commit()
-        return len(rows)
+        try:
+            with self._connect() as conn:
+                conn.executemany(
+                    """
+                    INSERT INTO articles(module, source_id, source_name, title, url, snippet, embedding, embedding_model, fetched_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(url) DO UPDATE SET
+                        module=excluded.module,
+                        source_id=excluded.source_id,
+                        source_name=excluded.source_name,
+                        title=excluded.title,
+                        snippet=excluded.snippet,
+                        embedding=excluded.embedding,
+                        embedding_model=excluded.embedding_model,
+                        fetched_at=excluded.fetched_at
+                    """,
+                    rows,
+                )
+                conn.commit()
+            logger.info(f"Successfully upserted {len(rows)} articles to store")
+            return len(rows)
+        except Exception as e:
+            logger.error(f"Failed to upsert articles to store: {e}", exc_info=True)
+            return 0
 
     def purge_old(self, max_age_hours: int = 24) -> int:
         threshold = datetime.now(CN_TZ) - timedelta(hours=max(1, int(max_age_hours)))

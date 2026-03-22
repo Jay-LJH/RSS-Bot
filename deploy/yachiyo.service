@@ -1,0 +1,19 @@
+[Unit]
+Description=Yachiyo Telegram Bot Server
+After=network.target
+
+[Service]
+# Modify User and Group to match your Ubuntu user. Default on Ubuntu is often 'ubuntu'.
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/path/to/Yachiyo
+ExecStart=/path/to/Yachiyo/.venv/bin/python bot.py
+Restart=always
+RestartSec=5
+# Output to syslog Use journalctl -u yachiyo.service -f to view
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=Yachiyo
+
+[Install]
+WantedBy=multi-user.target

@@ -5,3 +5,5 @@ requests
 google-genai
 APScheduler
 PyYAML
+pytest
+pytest-mock

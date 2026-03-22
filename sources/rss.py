@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 import re
 import xml.etree.ElementTree as ET
@@ -10,7 +11,10 @@ from bs4 import BeautifulSoup
 from core.article import Article
 from .catalog import get_module_sources
 
+logger = logging.getLogger(__name__)
+
 USER_AGENT = "Mozilla/5.0 (compatible; article-bot/2.0)"
+
 
 
 def _build_headers() -> dict[str, str]:
@@ -34,37 +38,44 @@ def fetch_rss_articles(module: str, source: dict[str, Any], limit: int = 5) -> l
 
     source_name = str(source.get("name") or module)
     source_id = str(source.get("id") or source_name)
-    response = requests.get(url, headers=_build_headers(), timeout=20)
-    response.raise_for_status()
+    logger.info(f"Fetching RSS articles from {source_name} ({url})")
+    
+    try:
+        response = requests.get(url, headers=_build_headers(), timeout=20)
+        response.raise_for_status()
 
-    root = ET.fromstring(response.content)
-    channel = root.find("channel")
-    if channel is None:
-        return []
+        root = ET.fromstring(response.content)
+        channel = root.find("channel")
+        if channel is None:
+            logger.warning(f"No RSS channel found for {url}")
+            return []
 
-    output: list[Article] = []
-    for item in channel.findall("item"):
-        title = _clean_text(item.findtext("title", default=""))
-        link = _clean_text(item.findtext("link", default=""))
-        desc = _clean_text(item.findtext("description", default=""))
-        if not title or not link:
-            continue
+        output: list[Article] = []
+        for item in channel.findall("item"):
+            title = _clean_text(item.findtext("title", default=""))
+            link = _clean_text(item.findtext("link", default=""))
+            desc = _clean_text(item.findtext("description", default=""))
+            if not title or not link:
+                continue
 
-        output.append(
-            Article(
-                module=module,
-                source_id=source_id,
-                source_name=source_name,
-                title=title,
-                url=link,
-                snippet=desc,
+            output.append(
+                Article(
+                    module=module,
+                    source_id=source_id,
+                    source_name=source_name,
+                    title=title,
+                    url=link,
+                    snippet=desc,
+                )
             )
-        )
-        if len(output) >= max(1, int(limit)):
-            break
+            if len(output) >= max(1, int(limit)):
+                break
 
-    return output
-
+        logger.info(f"Fetched {len(output)} articles from {source_name}")
+        return output
+    except Exception as e:
+        logger.error(f"Failed to fetch RSS from {source_name} ({url}): {e}")
+        return []
 
 def fetch_module_articles(module: str, limit: int = 5) -> list[Article]:
     articles: list[Article] = []
