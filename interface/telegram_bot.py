@@ -11,7 +11,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 from config import get_required_env
-from interface.report_service import get_report, refresh_content_cache
+from interface.report_service import get_report, refresh_content_cache, get_smart_report
 from llm import generate_user_reply, plan_tool_call_small_model
 from sources import (
     add_rss_source,
@@ -105,16 +105,17 @@ def _fallback_tool_decision(text: str) -> dict[str, Any]:
 
 
 def _help_text() -> str:
-    available = list_modules()
-    modules = ", ".join(available) if available else "暂无（先用 /rss 添加）"
     return (
         "📘 使用帮助\n"
-        "1) 添加 RSS 源：/rss <rss_url> [名称]\n"
-        "   查看 RSS 列表：/rss list\n"
-        "2) 手动推送：/send [模块1,模块2]\n"
-        "3) 自动推送：/autopush on|off|modules\n"
-        "4) 自然语言提问：直接输入想看的内容（会自动匹配源）\n"
-        f"当前可用模块：{modules}"
+        "1) 自动推送设置：\n"
+        "   /autopush [关键词1 关键词2...] (设置感兴趣的内容并开启)\n"
+        "   /autopush off (关闭)\n"
+        "   /autopush on (开启)\n"
+        "2) 手动推送：/send [关键词]\n"
+        "3) 内容源管理：\n"
+        "   /rss <rss_url> [名称] (添加)\n"
+        "   /rss list (查看)\n"
+        "4) 自然语言提问：直接输入想看的内容（引擎会自动匹配推送）\n"
     )
 
 
@@ -148,8 +149,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await update.message.reply_text(_help_text())
 
 
-def _normalize_modules(raw: str | list[str] | None) -> list[str]:
-    available = set(list_modules())
+def _normalize_topics(raw: str | list[str] | None) -> list[str]:
     if raw is None:
         return _default_modules()
 
@@ -161,8 +161,8 @@ def _normalize_modules(raw: str | list[str] | None) -> list[str]:
 
     normalized: list[str] = []
     for item in parts:
-        key = normalize_module_key(item)
-        if key in available and key not in normalized:
+        key = item.strip()
+        if key and key not in normalized:
             normalized.append(key)
 
     return normalized
@@ -190,7 +190,7 @@ def _load_subscriptions() -> dict[int, dict[str, Any]]:
             for chat_id, cfg in subscriptions.items():
                 if not isinstance(cfg, dict):
                     continue
-                modules = _normalize_modules(cfg.get("modules"))
+                modules = _normalize_topics(cfg.get("modules"))
                 if not modules:
                     modules = _default_modules()
                 result[int(chat_id)] = {
@@ -208,7 +208,7 @@ def _save_subscriptions(subscriptions: dict[int, dict[str, Any]]) -> None:
         "subscriptions": {
             str(chat_id): {
                 "enabled": bool(cfg.get("enabled", True)),
-                "modules": _normalize_modules(cfg.get("modules")) or _default_modules(),
+                "modules": _normalize_topics(cfg.get("modules")) or _default_modules(),
             }
             for chat_id, cfg in sorted(subscriptions.items())
         }
@@ -228,12 +228,13 @@ def _schedule_daily_push(app: Application, chat_id: int) -> None:
     for job in app.job_queue.get_jobs_by_name(name):
         job.schedule_removal()
 
-    app.job_queue.run_daily(
-        callback=_daily_push_job,
-        time=time(hour=9, minute=0, tzinfo=CN_TZ),
-        chat_id=chat_id,
-        name=name,
-    )
+    for hour in (0, 6, 12, 18):
+        app.job_queue.run_daily(
+            callback=_daily_push_job,
+            time=time(hour=hour, minute=0, tzinfo=CN_TZ),
+            chat_id=chat_id,
+            name=name,
+        )
 
 
 def _schedule_cache_refresh(app: Application) -> None:
@@ -295,14 +296,17 @@ async def _daily_push_job(context: ContextTypes.DEFAULT_TYPE) -> None:
         if not cfg or not cfg.get("enabled", False):
             return
 
-        modules = _normalize_modules(cfg.get("modules"))
-        if not modules:
-            modules = _default_modules()
+        modules = _normalize_topics(cfg.get("modules"))
         if not modules:
             return
 
-        picked_module = random.choice(modules)
-        report = await asyncio.to_thread(get_report, [picked_module], 3)
+        query_text = " ".join(cfg.get("modules", []))
+        if query_text:
+            report = await asyncio.to_thread(get_smart_report, query_text, 5)
+        else:
+            picked_module = random.choice(modules)
+            report = await asyncio.to_thread(get_report, [picked_module], 5)
+
         for part in _split_message(report):
             await context.bot.send_message(chat_id=chat_id, text=part)
     except Exception as exc:
@@ -324,14 +328,14 @@ async def autopush(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     action = (context.args[0].strip().lower() if context.args else "status")
 
     if action in {"on", "start", "enable", "1"}:
-        modules = _normalize_modules(",".join(context.args[1:])) if len(context.args) > 1 else _normalize_modules(current.get("modules"))
+        modules = _normalize_topics(",".join(context.args[1:])) if len(context.args) > 1 else _normalize_topics(current.get("modules"))
         if not modules:
             modules = _default_modules()
 
         subscriptions[chat_id] = {"enabled": True, "modules": modules}
         _schedule_daily_push(context.application, chat_id)
         _save_subscriptions(subscriptions)
-        await update.message.reply_text("✅ 已开启自动推送：每天 09:00（北京时间）\n" f"订阅板块：{', '.join(modules)}")
+        await update.message.reply_text("✅ 已开启自动推送：每天 00:00, 06:00, 12:00, 18:00（北京时间）\n" f"订阅板块：{', '.join(modules)}")
         return
 
     if action in {"off", "stop", "disable", "0"}:
@@ -340,44 +344,41 @@ async def autopush(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 job.schedule_removal()
         subscriptions[chat_id] = {
             "enabled": False,
-            "modules": _normalize_modules(current.get("modules")) or _default_modules(),
+            "modules": _normalize_topics(current.get("modules")) or _default_modules(),
         }
         _save_subscriptions(subscriptions)
         await update.message.reply_text("🛑 已关闭自动推送")
         return
 
-    if action in {"modules", "module", "m"}:
-        modules = _normalize_modules(",".join(context.args[1:])) if len(context.args) > 1 else []
-        if not modules:
-            available = list_modules()
-            await update.message.reply_text(f"❌ 请指定至少一个有效模块。当前可用：{', '.join(available) if available else '暂无'}")
+    if action not in {"status", "on", "start", "enable", "1", "off", "stop", "disable", "0"}:
+        topics = [x for x in context.args if x.strip().lower() not in {"topics", "topic", "t", "modules", "module", "m"}]
+        if not topics:
+            await update.message.reply_text("❌ 请指定至少一个感兴趣的领域或关键词，例如：/autopush 科技 财经")
             return
 
         subscriptions[chat_id] = {
-            "enabled": bool(current.get("enabled", False)),
-            "modules": modules,
+            "enabled": True, # Automatically enable when setting topics
+            "modules": topics,
         }
         if subscriptions[chat_id]["enabled"]:
             _schedule_daily_push(context.application, chat_id)
         _save_subscriptions(subscriptions)
-        await update.message.reply_text(f"✅ 已更新订阅板块：{', '.join(modules)}")
+        await update.message.reply_text(f"✅ 已更新订阅内容：{', '.join(topics)}")
         return
 
     status = "已开启" if current.get("enabled", False) else "未开启"
-    modules = _normalize_modules(current.get("modules")) or _default_modules()
-    available = list_modules()
+    topics = _normalize_topics(current.get("modules")) or _default_modules()
     await update.message.reply_text(
         "用法：\n"
-        "/autopush on [模块1,模块2]\n"
-        "/autopush off\n"
-        "/autopush modules 模块1,模块2\n"
-        "/send [模块1,模块2]\n"
-        "/rss <rss_url> [名称]\n"
-        "/rss list\n"
-        "/help\n"
-        f"当前可用模块：{', '.join(available) if available else '暂无'}\n"
+        "/autopush [关键词1 关键词2...]  - 设置感兴趣的内容并开启推送\n"
+        "/autopush off                - 关闭自动推送\n"
+        "/autopush on                 - 开启自动推送\n"
+        "/send [关键词]               - 立即手动推送匹配内容\n"
+        "/rss <rss_url> [名称]        - 添加订阅源\n"
+        "/rss list                    - 查看订阅源\n"
+        "/help                        - 查看帮助\n"
         f"当前状态：{status}\n"
-        f"当前订阅板块：{', '.join(modules)}"
+        f"当前订阅内容：{', '.join(topics)}"
     )
 
 
@@ -389,17 +390,17 @@ async def send(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     subscriptions = _load_subscriptions()
     current = subscriptions.get(chat_id, {"enabled": False, "modules": _default_modules()})
 
-    modules = _normalize_modules(",".join(context.args)) if context.args else _normalize_modules(current.get("modules"))
-    if not modules:
-        modules = _default_modules()
-    if not modules:
-        await update.message.reply_text("❌ 当前没有可用模块，请先使用 /rss 添加信息源")
+    topics = _normalize_topics(",".join(context.args)) if context.args else _normalize_topics(current.get("modules"))
+    if not topics:
+        topics = _default_modules()
+    if not topics:
+        await update.message.reply_text("❌ 当前没有可用内容，请先使用 /rss 添加信息源或指定关键词")
         return
 
     try:
-        selected_modules = modules if context.args else [random.choice(modules)]
-        await update.message.reply_text(f"正在推送板块：{', '.join(selected_modules)}，请稍候…")
-        report = await asyncio.to_thread(get_report, selected_modules, 3)
+        query_text = " ".join(topics)
+        await update.message.reply_text(f"正在检索相关内容：{query_text}，请稍候…")
+        report = await asyncio.to_thread(get_smart_report, query_text, 5)
         for part in _split_message(report):
             await update.message.reply_text(part)
     except Exception as exc:
