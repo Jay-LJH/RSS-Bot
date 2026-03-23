@@ -21,7 +21,7 @@ if [ "$HEAD_HASH" != "$UPSTREAM_HASH" ]; then
     # Check if requirements.txt changes between HEAD and UPSTREAM
     REQ_CHANGED=$(git diff --name-only HEAD @{u} | grep -c "requirements.txt" || true)
     
-    git pull origin main
+    git pull origin master
 
     if [ "$REQ_CHANGED" -gt 0 ]; then
         echo "requirements.txt has changed. Updating dependencies..."
