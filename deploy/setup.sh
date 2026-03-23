@@ -33,7 +33,7 @@ sed -i "s|Group=ubuntu|Group=$(id -gn)|g" "$TEMP_SERVICE"
 sudo cp "$TEMP_SERVICE" "/etc/systemd/system/yachiyo.service"
 sudo systemctl daemon-reload
 sudo systemctl enable yachiyo.service
-sudo systemctl start yachiyo.service
+sudo systemctl restart yachiyo.service
 
 echo "Yachiyo Service Started"
 
@@ -41,7 +41,7 @@ echo "Setting up Cron Job for Auto Update"
 chmod +x "${PROJECT_DIR}/deploy/update.sh"
 CRON_JOB="*/15 * * * * ${PROJECT_DIR}/deploy/update.sh >> ${PROJECT_DIR}/deploy/update.log 2>&1"
 
-(crontab -l | grep -v "${PROJECT_DIR}/deploy/update.sh"; echo "$CRON_JOB") | crontab -
+( (crontab -l 2>/dev/null || true) | grep -v "${PROJECT_DIR}/deploy/update.sh" || true; echo "$CRON_JOB" ) | crontab -
 
 echo "Setup Completed Successfully."
 echo "- Check service status: sudo systemctl status yachiyo.service"
